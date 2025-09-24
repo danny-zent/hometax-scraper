@@ -66,7 +66,7 @@ jobs:
       working-directory: ./cdk
       run: npx cdk synth
       env:
-        SLACK_WEBHOOK_URL: "https://hooks.slack.com/services/dummy/webhook/url"
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
     - name: Python syntax check
       working-directory: ./lambda/src
@@ -85,7 +85,7 @@ jobs:
         print('SlackNotifier class test: OK')
         "
       env:
-        SLACK_WEBHOOK_URL: "https://hooks.slack.com/services/dummy/webhook/url"
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
   security-scan:
     name: Security Scan
