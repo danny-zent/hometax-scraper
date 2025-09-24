@@ -14,7 +14,7 @@ jobs:
   lint-and-test:
     name: Lint and Test
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -23,8 +23,14 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: ${{ env.NODE_VERSION }}
-        cache: 'npm'
-        cache-dependency-path: cdk/package-lock.json
+
+    - name: Cache npm dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.npm
+        key: ${{ runner.os }}-npm-${{ hashFiles('cdk/package.json') }}
+        restore-keys: |
+          ${{ runner.os }}-npm-
 
     - name: Setup Python
       uses: actions/setup-python@v4
@@ -113,8 +119,14 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: ${{ env.NODE_VERSION }}
-        cache: 'npm'
-        cache-dependency-path: cdk/package-lock.json
+
+    - name: Cache npm dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.npm
+        key: ${{ runner.os }}-npm-${{ hashFiles('cdk/package.json') }}
+        restore-keys: |
+          ${{ runner.os }}-npm-
 
     - name: Setup Python
       uses: actions/setup-python@v4
