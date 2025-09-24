@@ -2,9 +2,11 @@ import json
 import os
 import logging
 import traceback
+import hashlib
 from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Set
 import requests
+import boto3
 from playwright.sync_api import sync_playwright
 
 # 로깅 설정
@@ -14,6 +16,71 @@ logger.setLevel(logging.INFO)
 # 환경 변수
 SLACK_WEBHOOK_URL = os.environ.get('SLACK_WEBHOOK_URL')
 TIMEZONE = os.environ.get('TIMEZONE', 'Asia/Seoul')
+DYNAMODB_TABLE_NAME = os.environ.get('DYNAMODB_TABLE_NAME', 'hometax-banner-history')
+
+class BannerHistoryManager:
+    """배너 기록 관리 클래스"""
+
+    def __init__(self):
+        self.dynamodb = boto3.resource('dynamodb')
+        self.table = self.dynamodb.Table(DYNAMODB_TABLE_NAME)
+
+    def generate_banner_hash(self, banner_data: Dict[str, Any]) -> str:
+        """배너 데이터로부터 해시 생성"""
+        # src와 alt 텍스트를 결합하여 해시 생성
+        content = f"{banner_data.get('src', '')}{banner_data.get('alt', '')}"
+        return hashlib.md5(content.encode('utf-8')).hexdigest()
+
+    def get_existing_banners(self) -> Set[str]:
+        """기존에 저장된 배너 해시들 조회"""
+        try:
+            response = self.table.scan(
+                ProjectionExpression='banner_hash'
+            )
+            return {item['banner_hash'] for item in response['Items']}
+        except Exception as e:
+            logger.error(f"기존 배너 조회 중 오류: {str(e)}")
+            return set()
+
+    def save_new_banners(self, new_banners: List[Dict[str, Any]]) -> bool:
+        """새로운 배너들을 DynamoDB에 저장"""
+        try:
+            current_time = datetime.now().isoformat()
+            ttl_time = int((datetime.now() + timedelta(days=90)).timestamp())
+
+            with self.table.batch_writer() as batch:
+                for banner in new_banners:
+                    banner_hash = self.generate_banner_hash(banner)
+                    batch.put_item(Item={
+                        'banner_hash': banner_hash,
+                        'first_seen': current_time,
+                        'src': banner.get('src', ''),
+                        'alt': banner.get('alt', ''),
+                        'title': banner.get('title', ''),
+                        'className': banner.get('className', ''),
+                        'ttl': ttl_time
+                    })
+
+            logger.info(f"{len(new_banners)}개의 새로운 배너를 DynamoDB에 저장했습니다.")
+            return True
+
+        except Exception as e:
+            logger.error(f"새로운 배너 저장 중 오류: {str(e)}")
+            logger.error(traceback.format_exc())
+            return False
+
+    def filter_new_banners(self, all_banners: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """전체 배너 목록에서 새로운 배너만 필터링"""
+        existing_hashes = self.get_existing_banners()
+        new_banners = []
+
+        for banner in all_banners:
+            banner_hash = self.generate_banner_hash(banner)
+            if banner_hash not in existing_hashes:
+                new_banners.append(banner)
+
+        logger.info(f"전체 {len(all_banners)}개 배너 중 {len(new_banners)}개가 새로운 배너입니다.")
+        return new_banners
 
 class HomeTaxScraper:
     """홈택스 메인 페이지 배너 스크래핑 클래스"""
@@ -126,14 +193,15 @@ class SlackNotifier:
     def __init__(self, webhook_url: str):
         self.webhook_url = webhook_url
     
-    def send_scraping_result(self, images: List[Dict[str, Any]], success: bool = True) -> bool:
+    def send_scraping_result(self, images: List[Dict[str, Any]], success: bool = True, is_new_only: bool = False) -> bool:
         """
         스크래핑 결과를 Slack으로 전송합니다.
-        
+
         Args:
             images: 스크래핑된 이미지 정보
             success: 스크래핑 성공 여부
-            
+            is_new_only: 새로운 배너만 전송하는 경우인지 여부
+
         Returns:
             bool: 전송 성공 여부
         """
@@ -143,22 +211,35 @@ class SlackNotifier:
             current_time = datetime.now(kst).strftime('%Y-%m-%d %H:%M:%S KST')
             
             if not success or not images:
-                # 실패한 경우
+                # 실패하거나 새로운 배너가 없는 경우
+                if not success:
+                    status_text = "🚨 홈택스 배너 스크래핑 실패"
+                    header_text = "🚨 홈택스 배너 스크래핑 실패"
+                    detail_text = f"*실행 시간:* {current_time}\n*상태:* 실패\n*이미지 수:* 0개"
+                else:
+                    # 새로운 배너가 없는 경우 - 알림을 보내지 않음
+                    if is_new_only:
+                        logger.info("새로운 배너가 없어 Slack 알림을 생략합니다.")
+                        return True
+                    status_text = "ℹ️ 홈택스 배너 - 새로운 배너 없음"
+                    header_text = "ℹ️ 홈택스 배너 확인 완료"
+                    detail_text = f"*실행 시간:* {current_time}\n*상태:* 성공\n*새로운 배너:* 0개"
+
                 message = {
-                    "text": "🚨 홈택스 배너 스크래핑 실패",
+                    "text": status_text,
                     "blocks": [
                         {
                             "type": "header",
                             "text": {
                                 "type": "plain_text",
-                                "text": "🚨 홈택스 배너 스크래핑 실패"
+                                "text": header_text
                             }
                         },
                         {
                             "type": "section",
                             "text": {
                                 "type": "mrkdwn",
-                                "text": f"*실행 시간:* {current_time}\n*상태:* 실패\n*이미지 수:* 0개"
+                                "text": detail_text
                             }
                         }
                     ]
@@ -167,21 +248,23 @@ class SlackNotifier:
                 # 성공한 경우
                 image_blocks = []
                 
-                # 헤더
+                # 헤더 - 새로운 배너인 경우 다른 제목 사용
+                header_title = "🆕 홈택스 새로운 배너 발견!" if is_new_only else "📊 홈택스 배너 스크래핑 결과"
                 image_blocks.append({
                     "type": "header",
                     "text": {
                         "type": "plain_text",
-                        "text": "📊 홈택스 배너 스크래핑 결과"
+                        "text": header_title
                     }
                 })
                 
-                # 요약 정보
+                # 요약 정보 - 새로운 배너인 경우 다른 메시지 사용
+                summary_text = f"*실행 시간:* {current_time}\n*상태:* 성공\n*{'새로운' if is_new_only else '추출된'} 이미지 수:* {len(images)}개"
                 image_blocks.append({
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*실행 시간:* {current_time}\n*상태:* 성공\n*추출된 이미지 수:* {len(images)}개"
+                        "text": summary_text
                     }
                 })
                 
@@ -203,11 +286,12 @@ class SlackNotifier:
                     if len(alt_text) > 200:
                         alt_text = alt_text[:200] + "..."
                     
+                    banner_prefix = f"*{'🆕 새로운 배너' if is_new_only else '배너'} {i}*"
                     image_blocks.append({
                         "type": "section",
                         "text": {
                             "type": "mrkdwn",
-                            "text": f"*배너 {i}*\n*Alt 텍스트:* {alt_text}\n*이미지 URL:* {src}"
+                            "text": f"{banner_prefix}\n*Alt 텍스트:* {alt_text}\n*이미지 URL:* {src}"
                         }
                     })
                     
@@ -222,8 +306,9 @@ class SlackNotifier:
                         })
                         break
                 
+                message_text = f"홈택스 {'새로운' if is_new_only else ''} 배너 {'발견' if is_new_only else '스크래핑 완료'} - {len(unique_images)}개 이미지 {'추가' if is_new_only else '추출'}"
                 message = {
-                    "text": f"홈택스 배너 스크래핑 완료 - {len(unique_images)}개 이미지 추출",
+                    "text": message_text,
                     "blocks": image_blocks
                 }
             
@@ -270,11 +355,21 @@ def lambda_handler(event, context):
         
         # 스크래핑 실행
         scraper = HomeTaxScraper()
-        images = scraper.scrape_banner_images()
-        
-        # Slack 알림 전송
+        all_images = scraper.scrape_banner_images()
+
+        # 배너 히스토리 관리자 초기화
+        history_manager = BannerHistoryManager()
+
+        # 새로운 배너만 필터링
+        new_images = history_manager.filter_new_banners(all_images)
+
+        # 새로운 배너가 있으면 DynamoDB에 저장
+        if new_images:
+            history_manager.save_new_banners(new_images)
+
+        # Slack 알림 전송 - 새로운 배너가 있을 때만 전송
         notifier = SlackNotifier(SLACK_WEBHOOK_URL)
-        notification_sent = notifier.send_scraping_result(images, success=bool(images))
+        notification_sent = notifier.send_scraping_result(new_images, success=bool(all_images), is_new_only=True)
         
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
@@ -282,16 +377,18 @@ def lambda_handler(event, context):
         result = {
             'statusCode': 200,
             'body': json.dumps({
-                'message': '홈택스 스크래핑 완료',
-                'images_count': len(images),
-                'unique_images_count': len(set(img.get('src') for img in images if img.get('src'))),
+                'message': '홈택스 배너 차등 스크래핑 완료',
+                'total_images_count': len(all_images),
+                'new_images_count': len(new_images),
+                'unique_total_count': len(set(img.get('src') for img in all_images if img.get('src'))),
+                'unique_new_count': len(set(img.get('src') for img in new_images if img.get('src'))),
                 'notification_sent': notification_sent,
                 'execution_time': f"{duration:.2f}초",
                 'timestamp': datetime.now().isoformat()
             }, ensure_ascii=False)
         }
         
-        logger.info(f"실행 완료 - {len(images)}개 이미지 추출, 소요시간: {duration:.2f}초")
+        logger.info(f"실행 완료 - 전체 {len(all_images)}개 이미지 중 {len(new_images)}개 새로운 배너 발견, 소요시간: {duration:.2f}초")
         return result
         
     except Exception as e:
@@ -302,7 +399,7 @@ def lambda_handler(event, context):
         try:
             if SLACK_WEBHOOK_URL:
                 notifier = SlackNotifier(SLACK_WEBHOOK_URL)
-                notifier.send_scraping_result([], success=False)
+                notifier.send_scraping_result([], success=False, is_new_only=False)
         except:
             logger.error("실패 알림 전송도 실패했습니다.")
         

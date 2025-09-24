@@ -4,6 +4,7 @@ import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import { Construct } from 'constructs';
 import * as path from 'path';
 
@@ -16,6 +17,18 @@ export class HometaxScraperStack extends cdk.Stack {
     if (!slackWebhookUrl) {
       throw new Error('SLACK_WEBHOOK_URL 환경변수가 설정되어 있지 않습니다.');
     }
+
+    // DynamoDB 테이블 - 배너 기록 저장
+    const bannerHistoryTable = new dynamodb.Table(this, 'HometaxBannerHistory', {
+      tableName: 'hometax-banner-history',
+      partitionKey: { name: 'banner_hash', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'first_seen', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.RETAIN, // 데이터 보존
+      pointInTimeRecovery: true,
+      timeToLiveAttribute: 'ttl', // 90일 후 자동 삭제
+      stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES
+    });
 
     // Lambda 함수를 위한 IAM 역할
     const lambdaRole = new iam.Role(this, 'HometaxScraperLambdaRole', {
@@ -36,6 +49,22 @@ export class HometaxScraperStack extends cdk.Stack {
               resources: ['arn:aws:logs:*:*:*']
             })
           ]
+        }),
+        DynamoDBPolicy: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              effect: iam.Effect.ALLOW,
+              actions: [
+                'dynamodb:GetItem',
+                'dynamodb:PutItem',
+                'dynamodb:Query',
+                'dynamodb:Scan',
+                'dynamodb:UpdateItem',
+                'dynamodb:DeleteItem'
+              ],
+              resources: [bannerHistoryTable.tableArn]
+            })
+          ]
         })
       }
     });
@@ -54,11 +83,12 @@ export class HometaxScraperStack extends cdk.Stack {
       timeout: cdk.Duration.minutes(5),
       memorySize: 1024,
       role: lambdaRole,
-      logGroup: logGroup,
+      logRetention: logs.RetentionDays.ONE_WEEK,
       environment: {
         SLACK_WEBHOOK_URL: slackWebhookUrl,
         TIMEZONE: 'Asia/Seoul',
-        PYTHONUNBUFFERED: '1'
+        PYTHONUNBUFFERED: '1',
+        DYNAMODB_TABLE_NAME: bannerHistoryTable.tableName
       },
       architecture: lambda.Architecture.X86_64,
       description: 'HomeTax scraper function that extracts banner images and alt texts'
@@ -106,6 +136,11 @@ export class HometaxScraperStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'LogGroupName', {
       value: logGroup.logGroupName,
       description: 'CloudWatch log group name'
+    });
+
+    new cdk.CfnOutput(this, 'DynamoDBTableName', {
+      value: bannerHistoryTable.tableName,
+      description: 'DynamoDB table name for banner history'
     });
 
     // 수동 실행을 위한 테스트 명령어 출력
