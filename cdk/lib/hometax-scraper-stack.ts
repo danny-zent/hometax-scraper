@@ -25,7 +25,9 @@ export class HometaxScraperStack extends cdk.Stack {
       sortKey: { name: 'first_seen', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.RETAIN, // 데이터 보존
-      pointInTimeRecovery: true,
+      pointInTimeRecoverySpecification: {
+        pointInTimeRecoveryEnabled: true
+      },
       timeToLiveAttribute: 'ttl', // 90일 후 자동 삭제
       stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES
     });
@@ -83,7 +85,7 @@ export class HometaxScraperStack extends cdk.Stack {
       timeout: cdk.Duration.minutes(5),
       memorySize: 1024,
       role: lambdaRole,
-      logRetention: logs.RetentionDays.ONE_WEEK,
+      logGroup: logGroup,
       environment: {
         SLACK_WEBHOOK_URL: slackWebhookUrl,
         TIMEZONE: 'Asia/Seoul',

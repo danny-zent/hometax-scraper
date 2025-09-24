@@ -168,6 +168,25 @@ jobs:
       working-directory: ./cdk
       run: npm run build
 
+    - name: Configure AWS credentials
+      run: |
+        aws configure set aws_access_key_id ${{ secrets.ZENT_DEV_AWS_ACCESS_KEY_ID }}
+        aws configure set aws_secret_access_key ${{ secrets.ZENT_DEV_AWS_SECRET_ACCESS_KEY }}
+        aws configure set default.region ap-northeast-2
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.ZENT_DEV_AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.ZENT_DEV_AWS_SECRET_ACCESS_KEY }}
+        AWS_DEFAULT_REGION: 'ap-northeast-2'
+
+    - name: Get AWS Account ID
+      run: |
+        export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.ZENT_DEV_AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.ZENT_DEV_AWS_SECRET_ACCESS_KEY }}
+        AWS_DEFAULT_REGION: 'ap-northeast-2'
+
     - name: CDK Bootstrap (if needed)
       working-directory: ./cdk
       run: npx cdk bootstrap
@@ -175,6 +194,8 @@ jobs:
         AWS_ACCESS_KEY_ID: ${{ secrets.ZENT_DEV_AWS_ACCESS_KEY_ID }}
         AWS_SECRET_ACCESS_KEY: ${{ secrets.ZENT_DEV_AWS_SECRET_ACCESS_KEY }}
         AWS_DEFAULT_REGION: 'ap-northeast-2'
+        CDK_DEFAULT_ACCOUNT: ${{ env.AWS_ACCOUNT_ID }}
+        CDK_DEFAULT_REGION: 'ap-northeast-2'
         SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
     - name: CDK Deploy
@@ -184,6 +205,8 @@ jobs:
         AWS_ACCESS_KEY_ID: ${{ secrets.ZENT_DEV_AWS_ACCESS_KEY_ID }}
         AWS_SECRET_ACCESS_KEY: ${{ secrets.ZENT_DEV_AWS_SECRET_ACCESS_KEY }}
         AWS_DEFAULT_REGION: 'ap-northeast-2'
+        CDK_DEFAULT_ACCOUNT: ${{ env.AWS_ACCOUNT_ID }}
+        CDK_DEFAULT_REGION: 'ap-northeast-2'
         SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
   notify-status:
